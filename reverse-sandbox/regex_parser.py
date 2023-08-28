@@ -1,5 +1,4 @@
 import logging
-import struct
 
 logging.config.fileConfig("logger.config")
 logger = logging.getLogger(__name__)
@@ -10,7 +9,6 @@ def parse_character(re, i, regex_list):
         value = "[.]"
     regex_list.append({
         "pos": i-6,
-        "nextpos": i+2-6,
         "type": "character",
         "value": value}
         )
@@ -19,7 +17,6 @@ def parse_character(re, i, regex_list):
 def parse_beginning_of_line(i, regex_list):
     regex_list.append({
         "pos": i-6,
-        "nextpos": i+1-6,
         "type": "character",
         "value": "^"}
         )
@@ -27,7 +24,6 @@ def parse_beginning_of_line(i, regex_list):
 def parse_end_of_line(i, regex_list):
     regex_list.append({
         "pos": i-6,
-        "nextpos": i+1-6,
         "type": "character",
         "value": "$"}
         )
@@ -35,7 +31,6 @@ def parse_end_of_line(i, regex_list):
 def parse_any_character(i, regex_list):
     regex_list.append({
         "pos": i-6,
-        "nextpos": i+1-6,
         "type": "character",
         "value": "."}
         )
@@ -44,7 +39,6 @@ def parse_jump_forward(re, i, regex_list):
     jump_to = re[i+1] + (re[i+2] << 8)
     regex_list.append({
         "pos": i-6,
-        "nextpos": i+3-6,
         "type": "jump_forward",
         "value": jump_to}
         )
@@ -54,7 +48,6 @@ def parse_jump_backward(re, i, regex_list):
     jump_to = re[i+1] + (re[i+2] << 8)
     regex_list.append({
         "pos": i-6,
-        "nextpos": i+3-6,
         "type": "jump_backward",
         "value": jump_to}
         )
@@ -94,8 +87,7 @@ def parse_character_class(re, i, regex_list):
             value += "%s" % (chr(values[j]))
     value += "]"
     regex_list.append({
-        "pos": i-6-1,
-        "nextpos": i + 2 * num - 6,
+        "pos": i-6,
         "type": node_type,
         "value": value
         })
@@ -107,7 +99,6 @@ def parse_character_class(re, i, regex_list):
 def parse_end(re, i, regex_list):
     regex_list.append({
         "pos": i-6,
-        "nextpos": i+2-6,
         "type": "end",
         "value": 0
         })
@@ -146,12 +137,6 @@ class RegexParser(object):
 
     @staticmethod
     def parse(re, i, regex_list):
-        length = struct.unpack('<H', ''.join([chr(x) for x in re[i:i+2]]))[0]
-        logger.debug("re.length: 0x%x", length)
-        i += 2
-        assert(length == len(re)-i)
         while i < len(re):
             i = parse(re, i, regex_list)
-
-        regex_list[0]["start_node"]=True
 

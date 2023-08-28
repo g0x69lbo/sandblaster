@@ -1,7 +1,6 @@
 import sys
 import struct
 import logging
-import time
 
 
 logging.config.fileConfig("logger.config")
@@ -122,10 +121,12 @@ class ReverseStringState:
             self.update_state_reset_string()
         else:
             self.update_state_token_byte_read()
+            return
 
     def get_next_byte(self):
         if self.is_end():
             return 0x00
+        
         b = struct.unpack("<B", self.binary_string[self.pos:self.pos+1])[0]
         logger.debug("read byte 0x{:02x}".format(b))
         self.pos += 1
@@ -133,6 +134,7 @@ class ReverseStringState:
 
     def get_length_minus_1(self):
         b = struct.unpack("<B", self.binary_string[self.pos-1:self.pos])[0]
+
         logger.debug("b is 0x{:02x} ({:d})".format(b, b))
         if b == 0x04:
             b = struct.unpack("<B", self.binary_string[self.pos:self.pos+1])[0]
@@ -141,12 +143,18 @@ class ReverseStringState:
             return b + 0x41
         else:
             logger.debug("got length 0x{:02x} ({:d})".format(b, b))
-            return b - 0x3f
+            if b >= 0x3f:
+                return b - 0x3f
+            return b
 
     def read_token(self, substr_len):
+        
         self.token_stack.append(self.token)
-        self.token = self.binary_string[self.pos:self.pos+substr_len]
-        logger.debug("got token \"{:s}\"".format(self.token))
+        try:
+            self.token = self.binary_string[self.pos:self.pos+substr_len].decode("utf-8")
+        except:
+            self.token = "UNSUPPORTED_STRING_TYPE_3"
+            pass  
         self.pos += substr_len
 
     def update_base(self):
@@ -160,7 +168,6 @@ class ReverseStringState:
 
     def end_current_token(self):
         self.output_strings.append(self.base+self.token)
-        logger.debug("output string \"{:s}\"".format(self.base+self.token))
         self.token = ""
 
     def get_last_byte(self):
@@ -168,7 +175,7 @@ class ReverseStringState:
 
     def get_substring(self, substr_len):
         substr = self.binary_string[self.pos:self.pos+substr_len]
-        logger.debug(" ".join("0x{:02x}".format(ord(c)) for c in substr))
+        logger.debug(substr)
         self.pos += substr_len
         return substr
 
@@ -270,15 +277,16 @@ class SandboxString:
                         all_ascii = False
                     b_array.append((b1,b2))
                 if all_ascii == False:
-                    (b1, b2) = b_array[0]
-                    (b3, b4) = b_array[1]
-                    if b2 == 0xff and b3 == 0x00:
-                        if b1-1 == b4+1:    # single char exclude
-                            token = "[^{:c}]".format(b1-1)
-                        else:               # range exclude
-                            token = "[^{:c}-{:c}]".format(b4+1, b1-1)
-                    else:
-                        token = "[TODO]"
+                    token = "[UNSUPPORTED]"
+                    # (b1, b2) = b_array[0]
+                    # (b3, b4) = b_array[1]
+                    # if b2 == 0xff and b3 == 0x00:
+                    #     if b1-1 == b4+1:    # single char exclude
+                    #         token = "[^{:c}]".format(b1-1)
+                    #     else:               # range exclude
+                    #         token = "[^{:c}-{:c}]".format(b4+1, b1-1)
+                    # else:
+                    #     token = "[TODO]"
                 else:
                     token = "["
                     for (b1, b2) in b_array:
@@ -335,7 +343,6 @@ class SandboxString:
             logger.warn("last state is not STATE_END_BYTE_READ ({:d})".format(rss.state))
             logger.warn("previous state ({:d})".format(rss.state_stack[len(rss.state_stack)-1]))
 
-        logger.info("initial string: " + " ".join("0x{:02x}".format(ord(c)) for c in s))
         logger.info("output_strings (num: {:d}): {:s}".format(len(rss.output_strings), ",".join('"{:s}"'.format(s) for s in rss.output_strings)))
         return rss.output_strings
 

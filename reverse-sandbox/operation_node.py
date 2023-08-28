@@ -5,10 +5,24 @@ import struct
 import re
 import logging
 import logging.config
+import json
+from sandbox_filter import get_filter_arg_string_by_offset_no_skip
 
 logging.config.fileConfig("logger.config")
 logger = logging.getLogger(__name__)
 
+class InlineModifier():
+    def __init__(self, id, policy_op_idx, argument):
+        self.id = id
+        self.policy_op_idx = policy_op_idx
+        self.argument = argument
+
+class Modifier():
+    def __init__(self, count, unknown, offset):
+        self.count = count
+        self.unknown = unknown
+        self.offset = offset
+        
 class TerminalNode():
     """Allow or Deny end node in binary sandbox format
 
@@ -19,19 +33,71 @@ class TerminalNode():
 
     TERMINAL_NODE_TYPE_ALLOW = 0x00
     TERMINAL_NODE_TYPE_DENY = 0x01
-    type = None
-    flags = None
+
+    def __init__(self):
+        self.type = None
+        self.flags = None
+        self.action = None
+        self.modifier_flags = None
+        self.action_inline = None
+        self.inline_modifier = None
+        self.modifier = None
+        self.inline_operation_node = None
+        self.modifiers_db = None
+        self.ss = None
+        self.db_modifier = None
+        self.parsed = False
 
     def __eq__(self, other):
         return self.type == other.type and self.flags == other.flags
 
     def __str__(self):
+        ret = ""
         if self.type == self.TERMINAL_NODE_TYPE_ALLOW:
-            return "allow"
+            ret += "allow"
         elif self.type == self.TERMINAL_NODE_TYPE_DENY:
-            return "deny"
+            ret += "deny"
         else:
-            return "unknown"
+            ret += "unknown"
+
+        if self.parsed:
+            if self.action_inline:
+                if self.inline_modifier.policy_op_idx:
+                    ret += str(self.inline_operation_node)
+                else:
+                    ret += f" (with {self.db_modifier['name']} {self.ss}"
+            else:
+                if self.modifier.count > 0:
+                    ret += "[UNSUPPORTED: modifiers]"
+                else:
+                    ret += "[UNSUPPORTED: action mask]"
+                    
+        return ret
+
+    def get_modifier(self, id):
+        if not self.modifiers_db:
+            with open('modifiers.json') as data:
+                temp = json.load(data)
+            self.modifiers_db = temp["modifiers"]
+        
+        for i in self.modifiers_db:
+            if i["id"] == id:
+                return i
+    
+    def terminal_convert_function(self, convert_fn, infile, sandbox_data, keep_builtin_filters):
+        if self.inline_modifier:
+            if not self.inline_modifier.policy_op_idx:
+                self.db_modifier = self.get_modifier(self.inline_modifier.id)
+                self.ss = get_filter_arg_string_by_offset_no_skip(infile, self.inline_modifier.argument)
+            else:
+                self.operation_name = sandbox_data.sb_ops[self.inline_modifier.policy_op_idx]
+                self.inline_operation_node = sandbox_data.operation_nodes[sandbox_data.policies[self.inline_modifier.argument]]
+                
+        self.parsed = True
+
+
+    def convert_filter(self, convert_fn, f, sandbox_data, keep_builtin_filters):
+        self.terminal_convert_function(convert_fn, f, sandbox_data, keep_builtin_filters)
 
     def is_allow(self):
         return self.type == self.TERMINAL_NODE_TYPE_ALLOW
@@ -50,14 +116,15 @@ class NonTerminalNode():
     the match and unmatch nodes.
     """
 
-    filter_id = None
-    filter = None
-    argument_id = None
-    argument = None
-    match_offset = None
-    match = None
-    unmatch_offset = None
-    unmatch = None
+    def __init__(self):
+        self.filter_id = None
+        self.filter = None
+        self.argument_id = None
+        self.argument = None
+        self.match_offset = None
+        self.match = None
+        self.unmatch_offset = None
+        self.unmatch = None
 
     def __eq__(self, other):
         return self.filter_id == other.filter_id and self.argument_id == other.argument_id and self.match_offset == other.match_offset and self.unmatch_offset == other.unmatch_offset
@@ -302,11 +369,8 @@ class NonTerminalNode():
     def is_last_regular_expression(self):
         return self.filter_id == 0x81 and self.argument_id == num_regex-1
 
-    def convert_filter(self, convert_fn, f, regex_list, ios_major_version,
-            keep_builtin_filters, global_vars, base_addr):
-        (self.filter, self.argument) = convert_fn(f, ios_major_version,
-            keep_builtin_filters, global_vars, regex_list, self.filter_id,
-            self.argument_id, base_addr)
+    def convert_filter(self, convert_fn, f, sandbox_data, keep_builtin_filters):
+        (self.filter, self.argument) = convert_fn(f, sandbox_data, keep_builtin_filters, self.filter_id, self.argument_id)
 
     def is_non_terminal_deny(self):
         if self.match.is_non_terminal() and self.unmatch.is_terminal():
@@ -346,14 +410,14 @@ class OperationNode():
 
     OPERATION_NODE_TYPE_NON_TERMINAL = 0x00
     OPERATION_NODE_TYPE_TERMINAL = 0x01
-    offset = None
-    raw = []
-    type = None
-    terminal = None
-    non_terminal = None
 
-    def __init__(self, offset):
+
+    def __init__(self, offset, raw):
         self.offset = offset
+        self.raw = raw
+        self.type = None
+        self.terminal = None
+        self.non_terminal = None
 
     def is_terminal(self):
         return self.type == self.OPERATION_NODE_TYPE_TERMINAL
@@ -361,15 +425,23 @@ class OperationNode():
     def is_non_terminal(self):
         return self.type == self.OPERATION_NODE_TYPE_NON_TERMINAL
 
-    def parse_terminal(self, ios_major_version):
+    def parse_terminal(self):
+        # end node        
         self.terminal = TerminalNode()
         self.terminal.parent = self
-        self.terminal.type = \
-            self.raw[2 if ios_major_version <12 else 1] & 0x01
-        self.terminal.flags = \
-            self.raw[2 if ios_major_version <12 else 1] & 0xfe
+
+        self.terminal.type = self.raw[1] & 0x01
+        self.terminal.modifier_flags = self.raw[2] + (self.raw[3] << 8)
+        self.terminal.action_inline = self.terminal.modifier_flags & 0x8000 != 0
+
+        if self.terminal.action_inline:
+            self.terminal.inline_modifier = InlineModifier(self.raw[4], self.raw[5], self.raw[6] + (self.raw[7] << 8))
+        else:
+            self.terminal.modifier = Modifier(self.raw[4], self.raw[5], self.raw[6] + (self.raw[7] << 8))
+
 
     def parse_non_terminal(self):
+        # intermediary node
         self.non_terminal = NonTerminalNode()
         self.non_terminal.parent = self
         self.non_terminal.filter_id = self.raw[1]
@@ -377,21 +449,21 @@ class OperationNode():
         self.non_terminal.match_offset = self.raw[4] + (self.raw[5] << 8)
         self.non_terminal.unmatch_offset = self.raw[6] + (self.raw[7] << 8)
 
-    def parse_raw(self, ios_major_version):
+    def parse_raw(self):
         self.type = self.raw[0]
         if self.is_terminal():
-            self.parse_terminal(ios_major_version)
+            self.parse_terminal()
         elif self.is_non_terminal():
             self.parse_non_terminal()
 
-    def convert_filter(self, convert_fn, f, regex_list, ios_major_version,
-            keep_builtin_filters, global_vars, base_addr):
+    def convert_filter(self, convert_fn, f, sandbox_data, keep_builtin_filters):
         if self.is_non_terminal():
-            self.non_terminal.convert_filter(convert_fn, f, regex_list,
-                ios_major_version, keep_builtin_filters, global_vars, base_addr)
+            self.non_terminal.convert_filter(convert_fn, f, sandbox_data, keep_builtin_filters)
+        elif self.terminal.action_inline:
+            self.terminal.convert_filter(self.terminal.terminal_convert_function, f, sandbox_data, keep_builtin_filters)
 
     def str_debug(self):
-        ret = "(%02x) " % (int)(self.offset)
+        ret = "(%02x) " % (self.offset)
         if self.is_terminal():
             ret += "terminal: "
             ret += str(self.terminal)
@@ -423,10 +495,10 @@ class OperationNode():
             return self.non_terminal.values()
 
     def __eq__(self, other):
-        return self.raw == other.raw
+        return self.offset == other.offset
 
     def __hash__(self):
-        return struct.unpack('<I', ''.join([chr(v) for v in self.raw[:4]]))[0]
+        return hash(self.offset)
 
 
 # Operation nodes processed so far.
@@ -435,45 +507,37 @@ processed_nodes = []
 # Number of regular expressions.
 num_regex = 0
 
-# Operation nodes offset.
-operations_offset = 0
-
 
 def has_been_processed(node):
     global processed_nodes
     return node in processed_nodes
 
 
-def build_operation_node(raw, offset, ios_major_version):
-    global operations_offset
-    node = OperationNode((offset - operations_offset) / 8) # why offset / 8 ?
-    node.raw = raw
-    node.parse_raw(ios_major_version)
+def build_operation_node(raw, index):
+    node = OperationNode(index, raw)
+    node.parse_raw()
     return node
 
 
-def build_operation_nodes(f, num_operation_nodes, ios_major_version):
-    global operations_offset
+def build_operation_nodes(f, num_operation_nodes):
     operation_nodes = []
+    cache = {}
 
-    if ios_major_version <= 12:
-        operations_offset = 0
-    else:
-        operations_offset = f.tell()
     for i in range(num_operation_nodes):
-        offset = f.tell()
         raw = struct.unpack("<8B", f.read(8))
-        operation_nodes.append(build_operation_node(raw, offset,
-            ios_major_version))
+        operation_nodes.append(build_operation_node(raw, i))
+        cache[operation_nodes[-1].offset] = operation_nodes[-1]
 
+    
     # Fill match and unmatch fields for each node in operation_nodes.
     for i in range(len(operation_nodes)):
         if operation_nodes[i].is_non_terminal():
-            for j in range(len(operation_nodes)):
-                if operation_nodes[i].non_terminal.match_offset == operation_nodes[j].offset:
-                    operation_nodes[i].non_terminal.match = operation_nodes[j]
-                if operation_nodes[i].non_terminal.unmatch_offset == operation_nodes[j].offset:
-                    operation_nodes[i].non_terminal.unmatch = operation_nodes[j]
+            
+            if operation_nodes[i].non_terminal.match_offset in cache:
+                operation_nodes[i].non_terminal.match = cache[operation_nodes[i].non_terminal.match_offset]
+
+            if operation_nodes[i].non_terminal.unmatch_offset in cache:
+                operation_nodes[i].non_terminal.unmatch = cache[operation_nodes[i].non_terminal.unmatch_offset]
 
     return operation_nodes
 
@@ -482,7 +546,8 @@ def find_operation_node_by_offset(operation_nodes, offset):
     for node in operation_nodes:
         if node.offset == offset:
             return node
-    return None
+    # return None
+    raise Exception(f"node.offset: {offset}")
 
 
 def ong_mark_not(g, node, parent_node, nodes_to_process):
@@ -516,10 +581,7 @@ def ong_add_to_parent_path(g, node, parent_node, nodes_to_process):
 def build_operation_node_graph(node, default_node):
     if node.is_terminal():
         return None
-
-    if default_node.is_non_terminal():
-        return None
-
+    
     # If node is non-terminal and has already been processed, then it's a jump rule to a previous operation.
     if has_been_processed(node):
         return None
@@ -530,9 +592,8 @@ def build_operation_node_graph(node, default_node):
     nodes_to_process.add((None, node))
     while nodes_to_process:
         (parent_node, current_node) = nodes_to_process.pop()
-        if not current_node in g.keys():
-            g[current_node] = {"list": set(), "decision": None,
-                "type": set(["normal"]), "reduce": None, "not": False}
+        if current_node not in g:
+            g[current_node] = {"list": set(), "decision": None, "type": {"normal"}, "reduce": None, "not": False}
         if not parent_node:
             g[current_node]["type"].add("start")
 
@@ -592,14 +653,19 @@ def build_operation_node_graph(node, default_node):
             elif current_node.non_terminal.is_allow_deny():
                 ong_mark_not(g, current_node, parent_node, nodes_to_process)
                 ong_end_path(g, current_node, parent_node, nodes_to_process)
+        else:
+            raise RuntimeError('terminal is neither deny or allow')
 
     processed_nodes.append(node)
     print_operation_node_graph(g)
     g = clean_edges_in_operation_node_graph(g)
+    '''
     while True:
         (g, more) = clean_nodes_in_operation_node_graph(g)
         if more == False:
             break
+    '''
+    assert g
     logger.debug("*** after cleaning nodes:")
     print_operation_node_graph(g)
 
@@ -611,9 +677,9 @@ def print_operation_node_graph(g):
         return
     message = ""
     for node_iter in g.keys():
-        message += "0x%x (%s) (%s) (decision: %s): [ " % ((int)(node_iter.offset), str(node_iter), g[node_iter]["type"], g[node_iter]["decision"])
+        message += "0x%x (%s) (%s) (decision: %s): [ " % (node_iter.offset, str(node_iter), g[node_iter]["type"], g[node_iter]["decision"])
         for edge in g[node_iter]["list"]:
-            message += "0x%x (%s) " % ((int)(edge.offset), str(edge))
+            message += "0x%x (%s) " % (edge.offset, str(edge))
         message += "]\n"
     logger.debug(message)
 
@@ -781,10 +847,6 @@ class ReducedVertice():
     TYPE_REQUIRE_ANY = "require-any"
     TYPE_REQUIRE_ALL = "require-all"
     TYPE_REQUIRE_ENTITLEMENT = "require-entitlement"
-    type = TYPE_SINGLE
-    is_not = False
-    value = None
-    decision = None
 
     def __init__(self, type=TYPE_SINGLE, value=None, decision=None, is_not=False):
         self.type = type
@@ -1052,9 +1114,6 @@ class ReducedVertice():
 
 
 class ReducedEdge():
-    start = None
-    end = None
-
     def __init__(self, start=None, end=None):
         self.start = start
         self.end = end
@@ -1072,11 +1131,6 @@ class ReducedEdge():
 
 
 class ReducedGraph():
-    vertices = []
-    edges = []
-    final_vertices = []
-    reduce_changes_occurred = False
-
     def __init__(self):
         self.vertices = []
         self.edges = []
@@ -1697,7 +1751,7 @@ def reduce_operation_node_graph(g):
             c_idx += 1
             if c_idx >= l:
                 break
-            rn = rg.get_vertice_by_value(list(g.keys())[c_idx])
+            rn = rg.get_vertice_by_value(g.keys()[c_idx])
             if not re.search("entitlement-value", str(rn)):
                 break
             prevs_rv = rg.get_prev_vertices(rv)
@@ -1716,18 +1770,19 @@ def reduce_operation_node_graph(g):
 
 
 def main():
-    if len(sys.argv) != 4:
-        print >> sys.stderr, "Usage: %s binary_sandbox_file operations_file ios_version" % (sys.argv[0])
+    if len(sys.argv) != 3:
+        print >> sys.stderr, "Usage: %s binary_sandbox_file operations_file" % (sys.argv[0])
         sys.exit(-1)
 
-    ios_major_version = int(sys.argv[3].split('.')[0])
     # Read sandbox operations.
     sb_ops = [l.strip() for l in open(sys.argv[2])]
     num_sb_ops = len(sb_ops)
     logger.info("num_sb_ops:", num_sb_ops)
 
     f = open(sys.argv[1], "rb")
-    operation_nodes = build_operation_nodes(f, num_sb_ops, ios_major_version)
+    print("read operation nodes from file")
+    print(num_sb_ops)
+    operation_nodes = build_operation_nodes(f, num_sb_ops)
 
     global num_regex
     f.seek(4)
@@ -1747,11 +1802,8 @@ def main():
         operation = sb_ops[idx]
         node = find_operation_node_by_offset(operation_nodes, offset)
         if not node:
-            logger.info("operation %s (index %d) has no operation node", operation, idx)
             continue
-        logger.debug("expanding operation %s (index %d, offset: %02x)", operation, idx, offset)
         g = build_operation_node_graph(node, default_node)
-        logger.debug("reducing operation %s (index %d, offset: %02x)", operation, idx, offset)
         print_operation_node_graph(g)
         if g:
             rg = reduce_operation_node_graph(g)
