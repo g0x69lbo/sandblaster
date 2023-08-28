@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
 import sys
 import struct
@@ -104,6 +104,7 @@ class TerminalNode():
 
     def is_deny(self):
         return self.type == self.TERMINAL_NODE_TYPE_DENY
+
 
 
 class NonTerminalNode():
@@ -585,7 +586,7 @@ def build_operation_node_graph(node, default_node):
     # If node is non-terminal and has already been processed, then it's a jump rule to a previous operation.
     if has_been_processed(node):
         return None
-
+    
     # Create operation node graph.
     g = {}
     nodes_to_process = set()
@@ -1790,10 +1791,10 @@ def main():
     logger.debug("num_regex: %02x" % (num_regex))
     f.seek(6)
     sb_ops_offsets = struct.unpack("<%dH" % (num_sb_ops), f.read(2*num_sb_ops))
-
+    
     # Extract node for 'default' operation (index 0).
     default_node = find_operation_node_by_offset(operation_nodes, sb_ops_offsets[0])
-    print("(%s default)" % (default_node.terminal))
+    print ("(%s default)" % (default_node.terminal))
 
     # For each operation expand operation node.
     #for idx in range(1, len(sb_ops_offsets)):
@@ -1811,7 +1812,7 @@ def main():
         else:
             if node.terminal:
                 if node.terminal.type != default_node.terminal.type:
-                    print("(%s %s)" % (node.terminal, operation))
+                    print ("(%s %s)" % (node.terminal, operation))
 
 
 if __name__ == "__main__":
