@@ -249,7 +249,7 @@
     },
     "0x3f":{
         "name":"require-ancestor-with-entitlement",
-        "arg_process_fn":"get_filter_arg_integer"
+        "arg_process_fn":"get_filter_arg_string_by_offset_no_skip"
     },
     "0x40":{
         "name":"persona-type",
@@ -261,7 +261,7 @@
     },
     "0x42":{
         "name":"require-target-with-entitlement",
-        "arg_process_fn":"get_filter_arg_integer"
+        "arg_process_fn":"get_filter_arg_string_by_offset_no_skip"
     },
     "0x43":{
         "name":"iokit-registry-entry-attribute",
@@ -341,15 +341,15 @@
     },
     "0x56":{
         "name":"require-responsible-binary-with-entitlement",
-        "arg_process_fn":"get_filter_arg_integer"
+        "arg_process_fn":"get_filter_arg_string_by_offset_no_skip"
     },
     "0x57":{
         "name":"entitlement-is-bool-true",
-        "arg_process_fn":"get_filter_arg_integer"
+        "arg_process_fn":"get_filter_arg_string_by_offset_no_skip"
     },
     "0x58":{
         "name":"entitlement-is-present",
-        "arg_process_fn":"get_filter_arg_integer"
+        "arg_process_fn":"get_filter_arg_string_by_offset_no_skip"
     },
     "0x59":{
         "name":"task-special-port",
