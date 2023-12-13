@@ -1849,7 +1849,7 @@ def convert_filter_callback(f, sandbox_data, keep_builtin_filters_arg, filter_id
         if result == None and filter["name"] != "debug-mode":
             logger.warn("result of calling string offset for filter {} is none".format(filter_id))
             return (None, None)
-        return (filter["name"] + append, result)
+        return (filter["name"] + ("-" if len(filter["name"]) else "") + append, result)
     result = globals()[filter["arg_process_fn"]](f, filter_arg)
     if result == None and filter["name"] != "debug-mode":
         logger.warn("result of calling arg_process_fn for filter {} is none".format(filter_id))

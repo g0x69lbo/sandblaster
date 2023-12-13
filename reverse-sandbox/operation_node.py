@@ -79,6 +79,34 @@ class TerminalNode():
                 ret += f" (with {modifier['name']})"
 
         return ret
+        
+    def c_repr(self):
+        ret = ""
+        assert self.type == (self.parent.raw[1] & 1)
+        if self.type == self.TERMINAL_NODE_TYPE_ALLOW:
+            ret += 'return allow("'
+        elif self.type == self.TERMINAL_NODE_TYPE_DENY:
+            ret += 'return deny("'
+        else:
+            ret += 'return unknown("'
+
+        
+        modifier_strings = []
+            
+        for modifier in self.db_modifiers[self.FLAGS_MODIFIERS]:
+            if modifier and 'name' in modifier.keys():
+                modifier_strings += [modifier['name']]
+        
+        if self.parsed:
+            if self.action_inline:
+                if not self.inline_modifier.policy_op_idx:
+                    for modifier in self.db_modifiers[self.INLINE_MODIFIERS]:
+                        modifier_strings += [f"{modifier['name']} '{self.ss}'"]
+                                    
+        ret += "; ".join(modifier_strings)
+        ret += '");'
+        
+        return ret
 
     def load_modifiers_db(self):
         if not self.modifiers_db:
@@ -312,6 +340,70 @@ class NonTerminalNode():
                 return "(%s)" % (self.filter)
         return "(%02x %04x %04x %04x)" % (self.filter_id, self.argument_id, self.match_offset, self.unmatch_offset)
 
+    def c_repr(self):
+        if self.filter:
+            if self.argument:
+                if type(self.argument) is list:
+                    if len(self.argument) != 1:
+                        self.argument = self.simplify_list(self.argument)
+        
+                    c_style_arguments = []
+                    for s in self.argument:
+                        curr_filter = self.filter
+                        regex_added = False
+                        prefix_added = False
+                        if len(s) == 0:
+                            s = ".+"
+                            if not regex_added:
+                                regex_added = True
+                                if self.filter == "literal":
+                                    curr_filter = "regex"
+                                else:
+                                    curr_filter += "_regex"
+                        else:
+                            if s[-4:] == "/^^^":
+                                curr_filter = "subpath"
+                                s = s[:-4]
+                            if '\\' in s or '|' in s or ('[' in s and ']' in s) or '+' in s:
+                                if curr_filter == "subpath":
+                                    s = s + "/?"
+                                if self.filter == "literal":
+                                    curr_filter = "regex"
+                                else:
+                                    curr_filter += "_regex"
+                                s = s.replace('\\\\.', '[.]')
+                                s = s.replace('\\.', '[.]')
+                            if "${" in s and "}" in s:
+                                if not prefix_added:
+                                    prefix_added = True
+                                    curr_filter += "_prefix"
+                        
+                        c_style_arguments += ['%s("%s")' % (curr_filter.replace("-","_"), s.replace("\\", "\\\\").replace('"', '\\"'))]
+                        
+                    return " || ".join(c_style_arguments)
+        
+                s = self.argument
+                curr_filter = self.filter.replace("-","_")
+                if not "regex" in curr_filter:
+                    if '\\' in s or '|' in s or ('[' in s and ']' in s) or '+' in s:
+                        if self.filter == "literal":
+                            curr_filter = "regex"
+                        else:
+                            curr_filter += "_regex"
+                        s = s.replace('\\\\.', '[.]')
+                        s = s.replace('\\.', '[.]')
+                if "${" in s and "}" in s:
+                    if not "prefix" in curr_filter:
+                        curr_filter += "_prefix"
+                        
+                return '%s("%s")' % (curr_filter, s.replace("\\", "\\\\").replace('"', '\\"'))
+            else:
+                if self.filter == "literal":
+                    return '%s("")' % (self.filter.replace("-","_"))
+                return "%s()" % (self.filter.replace("-","_"))
+        
+        return "unparsed_filter(0x%02x, 0x%04x)" % (self.filter_id, self.argument_id)
+    
     def str_not(self):
         if self.filter:
             if self.argument:
@@ -504,6 +596,14 @@ class OperationNode():
             ret += str(self.terminal)
         if self.is_non_terminal():
             ret += str(self.non_terminal)
+        return ret
+
+    def c_repr(self):
+        ret = ""
+        if self.is_terminal():
+            ret += self.terminal.c_repr()
+        if self.is_non_terminal():
+            ret += self.non_terminal.c_repr()
         return ret
 
     def str_not(self):
