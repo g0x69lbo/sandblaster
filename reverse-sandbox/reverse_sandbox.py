@@ -12,11 +12,9 @@ Excellent information from Stefan Essers' slides and work
 
 import sys
 import struct
-import logging
 import logging.config
 import argparse
 import os
-import re
 import operation_node
 import sandbox_filter
 import sandbox_regex
@@ -142,10 +140,11 @@ def create_operation_nodes(infile, sandbox_data, keep_builtin_filters):
     # Read sandbox operations.
     sandbox_data.operation_nodes = operation_node.build_operation_nodes(infile, sandbox_data.op_nodes_count)
     logger.info("operation nodes")
-    
+
     for op_node in sandbox_data.operation_nodes:
         op_node.convert_filter(sandbox_filter.convert_filter_callback, infile, sandbox_data, keep_builtin_filters)
     logger.info("operation nodes after filter conversion")
+
     
     return sandbox_data.operation_nodes
 
@@ -193,6 +192,7 @@ def process_profile(infile, outfname, sb_ops, ops_to_reverse, op_table, operatio
                 continue
     
         node = operation_node.find_operation_node_by_offset(operation_nodes, offset)
+
         if not node:        
             continue
         g = operation_node.build_operation_node_graph(node, default_node)
@@ -206,6 +206,11 @@ def process_profile(infile, outfname, sb_ops, ops_to_reverse, op_table, operatio
                 if node.terminal.type != default_node.terminal.type:
                     outfile.write("(%s %s)\n" % (node.terminal, operation))
                     outfile_xml.write("\t<operation name=\"%s\" action=\"%s\" />\n" % (operation, node.terminal))
+                else:
+                    modifiers_type = [key for key, val in node.terminal.db_modifiers.items() if len(val)]
+                    if modifiers_type:
+                        outfile.write("(%s %s)\n" % (node.terminal, operation))
+                        outfile_xml.write("\t<operation name=\"%s\" action=\"%s\" />\n" % (operation, node.terminal))
 
     outfile.close()
     outfile_xml.write("</operations>\n")
@@ -367,7 +372,9 @@ def main():
             # operands to read for each profile
             op_table = struct.unpack("<%dH" % sandbox_data.sb_ops_count, infile.read(2 * sandbox_data.sb_ops_count))
 
+            name = name.replace('/', '_')
             out_fname = os.path.join(out_dir, name + ".sb")
+            
             process_profile(infile, out_fname, sandbox_data.sb_ops, sandbox_data.ops_to_reverse, op_table, operation_nodes)
 
     # global profile

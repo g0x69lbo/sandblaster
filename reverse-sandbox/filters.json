@@ -321,7 +321,7 @@
     },
     "0x51":{
         "name":"mac-policy-name",
-        "arg_process_fn":"get_filter_arg_string_by_offset_no_skip"
+        "arg_process_fn":"get_filter_arg_string_by_offset"
     },
     "0x52":{
         "name":"mac-syscall-number",

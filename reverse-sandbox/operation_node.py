@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import sys
 import struct
@@ -7,6 +7,7 @@ import logging
 import logging.config
 import json
 from sandbox_filter import get_filter_arg_string_by_offset_no_skip
+import sandbox_filter
 
 logging.config.fileConfig("logger.config")
 logger = logging.getLogger(__name__)
@@ -18,7 +19,8 @@ class InlineModifier():
         self.argument = argument
 
 class Modifier():
-    def __init__(self, count, unknown, offset):
+    def __init__(self, flags, count, unknown, offset):
+        self.flags = flags
         self.count = count
         self.unknown = unknown
         self.offset = offset
@@ -34,6 +36,9 @@ class TerminalNode():
     TERMINAL_NODE_TYPE_ALLOW = 0x00
     TERMINAL_NODE_TYPE_DENY = 0x01
 
+    INLINE_MODIFIERS = "inline_modifiers"
+    FLAGS_MODIFIERS = "flags_modifiers"
+
     def __init__(self):
         self.type = None
         self.flags = None
@@ -45,8 +50,9 @@ class TerminalNode():
         self.inline_operation_node = None
         self.modifiers_db = None
         self.ss = None
-        self.db_modifier = None
+        self.db_modifiers = {self.INLINE_MODIFIERS: [], self.FLAGS_MODIFIERS: []}
         self.parsed = False
+        self.operation_name = None
 
     def __eq__(self, other):
         return self.type == other.type and self.flags == other.flags
@@ -62,49 +68,67 @@ class TerminalNode():
 
         if self.parsed:
             if self.action_inline:
-                if self.inline_modifier.policy_op_idx:
+                if not self.inline_modifier.policy_op_idx:
+                    for modifier in self.db_modifiers[self.INLINE_MODIFIERS]:
+                        ret += f" (with {modifier['name']} {self.ss})"
+                else:
                     ret += str(self.inline_operation_node)
-                else:
-                    ret += f" (with {self.db_modifier['name']} {self.ss}"
-            else:
-                if self.modifier.count > 0:
-                    ret += "[UNSUPPORTED: modifiers]"
-                else:
-                    ret += "[UNSUPPORTED: action mask]"
-                    
+
+        for modifier in self.db_modifiers[self.FLAGS_MODIFIERS]:
+            if modifier and 'name' in modifier.keys():
+                ret += f" (with {modifier['name']})"
+
         return ret
 
-    def get_modifier(self, id):
+    def load_modifiers_db(self):
         if not self.modifiers_db:
             with open('modifiers.json') as data:
                 temp = json.load(data)
             self.modifiers_db = temp["modifiers"]
-        
+
+    def get_modifier(self, key_value, key_name):
+        self.load_modifiers_db()
         for i in self.modifiers_db:
-            if i["id"] == id:
+            if i[key_name] == key_value:
                 return i
-    
+
+    def get_modifiers_by_flag(self, flags):
+        self.load_modifiers_db()
+        modifiers = []
+        for modifier in self.modifiers_db:
+            # should be if modifier['action_mask'] ... currently ignoring 'no-report' modifier
+            if modifier['action_mask'] and (flags & modifier['action_mask'] == modifier['action_flag']):
+                # remove default with report
+                if modifier['name'] == "report" and self.is_deny(): # report is default for deny
+                    continue
+                if modifier['name'] == "no-report" and self.is_allow(): # report is default for allow
+                    continue
+                # need to add no-report
+                modifiers.append(modifier)
+
+        return modifiers
+
     def terminal_convert_function(self, convert_fn, infile, sandbox_data, keep_builtin_filters):
         if self.inline_modifier:
             if not self.inline_modifier.policy_op_idx:
-                self.db_modifier = self.get_modifier(self.inline_modifier.id)
-                self.ss = get_filter_arg_string_by_offset_no_skip(infile, self.inline_modifier.argument)
+                self.db_modifiers[self.INLINE_MODIFIERS].append(self.get_modifier(self.inline_modifier.id, 'id'))
+                self.ss = sandbox_filter.convert_modifier_callback(infile, sandbox_data, self.inline_modifier.id, self.inline_modifier.argument)
             else:
                 self.operation_name = sandbox_data.sb_ops[self.inline_modifier.policy_op_idx]
                 self.inline_operation_node = sandbox_data.operation_nodes[sandbox_data.policies[self.inline_modifier.argument]]
-                
-        self.parsed = True
 
+        self.db_modifiers[self.FLAGS_MODIFIERS].extend(self.get_modifiers_by_flag(self.modifier.flags))
+        self.parsed = True
 
     def convert_filter(self, convert_fn, f, sandbox_data, keep_builtin_filters):
         self.terminal_convert_function(convert_fn, f, sandbox_data, keep_builtin_filters)
+
 
     def is_allow(self):
         return self.type == self.TERMINAL_NODE_TYPE_ALLOW
 
     def is_deny(self):
         return self.type == self.TERMINAL_NODE_TYPE_DENY
-
 
 
 class NonTerminalNode():
@@ -431,14 +455,15 @@ class OperationNode():
         self.terminal = TerminalNode()
         self.terminal.parent = self
 
-        self.terminal.type = self.raw[1] & 0x01
-        self.terminal.modifier_flags = self.raw[2] + (self.raw[3] << 8)
-        self.terminal.action_inline = self.terminal.modifier_flags & 0x8000 != 0
+        self.terminal.type = self.raw[1] & 1
+        
+        self.terminal.modifier_flags = self.raw[1] | (self.raw[2] << 8) | (self.raw[3] << 16)
+        self.terminal.action_inline = self.terminal.modifier_flags & 0x800000 != 0
 
         if self.terminal.action_inline:
             self.terminal.inline_modifier = InlineModifier(self.raw[4], self.raw[5], self.raw[6] + (self.raw[7] << 8))
-        else:
-            self.terminal.modifier = Modifier(self.raw[4], self.raw[5], self.raw[6] + (self.raw[7] << 8))
+
+        self.terminal.modifier = Modifier(self.terminal.modifier_flags, self.raw[4], self.raw[5], self.raw[6] + (self.raw[7] << 8))
 
 
     def parse_non_terminal(self):
@@ -460,7 +485,7 @@ class OperationNode():
     def convert_filter(self, convert_fn, f, sandbox_data, keep_builtin_filters):
         if self.is_non_terminal():
             self.non_terminal.convert_filter(convert_fn, f, sandbox_data, keep_builtin_filters)
-        elif self.terminal.action_inline:
+        elif self.terminal:
             self.terminal.convert_filter(self.terminal.terminal_convert_function, f, sandbox_data, keep_builtin_filters)
 
     def str_debug(self):
@@ -586,9 +611,10 @@ def build_operation_node_graph(node, default_node):
     # If node is non-terminal and has already been processed, then it's a jump rule to a previous operation.
     if has_been_processed(node):
         return None
-    
+
     # Create operation node graph.
     g = {}
+
     nodes_to_process = set()
     nodes_to_process.add((None, node))
     while nodes_to_process:
@@ -660,6 +686,7 @@ def build_operation_node_graph(node, default_node):
     processed_nodes.append(node)
     print_operation_node_graph(g)
     g = clean_edges_in_operation_node_graph(g)
+
     '''
     while True:
         (g, more) = clean_nodes_in_operation_node_graph(g)
@@ -1632,8 +1659,8 @@ class ReducedGraph():
         self.aggregate_require_entitlement_with_metanodes()
 
     def print_vertices_with_operation(self, operation, out_f):
-        allow_vertices = [v for v in self.vertices if v.decision == "allow"]
-        deny_vertices = [v for v in self.vertices if v.decision == "deny"]
+        allow_vertices = [v for v in self.vertices if "allow" in v.decision]
+        deny_vertices = [v for v in self.vertices if "deny" in v.decision]
         if allow_vertices:
             out_f.write("(allow %s " % (operation))
             if len(allow_vertices) > 1:
@@ -1791,10 +1818,10 @@ def main():
     logger.debug("num_regex: %02x" % (num_regex))
     f.seek(6)
     sb_ops_offsets = struct.unpack("<%dH" % (num_sb_ops), f.read(2*num_sb_ops))
-    
+
     # Extract node for 'default' operation (index 0).
     default_node = find_operation_node_by_offset(operation_nodes, sb_ops_offsets[0])
-    print ("(%s default)" % (default_node.terminal))
+    print("(%s default)" % (default_node.terminal))
 
     # For each operation expand operation node.
     #for idx in range(1, len(sb_ops_offsets)):
@@ -1812,7 +1839,7 @@ def main():
         else:
             if node.terminal:
                 if node.terminal.type != default_node.terminal.type:
-                    print ("(%s %s)" % (node.terminal, operation))
+                    print("(%s %s)" % (node.terminal, operation))
 
 
 if __name__ == "__main__":

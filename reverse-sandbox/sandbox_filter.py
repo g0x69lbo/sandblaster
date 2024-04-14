@@ -7,6 +7,7 @@ import logging.config
 import reverse_string
 
 from filters import Filters
+from modifiers import Modifiers
 
 
 logging.config.fileConfig("logger.config")
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 keep_builtin_filters = False
 global_vars = []
+
 
 def get_filter_arg_string_by_offset(f, offset):
     """Extract string (literal) from given offset."""
@@ -31,6 +33,7 @@ def get_filter_arg_string_by_offset(f, offset):
     actual_string = actual_string[:-1]
     logger.info("actual string is " + actual_string)
     return myss
+
 
 def get_filter_arg_string_by_offset_with_type(f, offset):
     """Extract string from given offset and consider type byte."""
@@ -57,8 +60,13 @@ def get_filter_arg_string_by_offset_no_skip(f, offset):
     """Extract string from given offset and ignore type byte."""
     global base_addr
     f.seek(offset * 8 + base_addr)
-    len = struct.unpack("<H", f.read(2))[0]-1
-    return '"%s"' % f.read(len)
+    string_len = struct.unpack("<H", f.read(2))[0]-1
+    res = ""
+    try:
+        res = f.read(string_len).decode()
+    except UnicodeDecodeError:
+        res = "UNSUPPORTED"
+    return res
 
 
 def get_filter_arg_network_address(f, offset):
@@ -1773,6 +1781,10 @@ def get_filter_arg_host_port(f, arg):
         return '%d' % arg
 
 
+def get_filter_arg_necp_client_action(f, arg):
+    return "[UNSUPPORTED]"
+
+
 """An array (dictionary) of filter converting items
 
 A filter is identied by a filter id and a filter argument. They are
@@ -1843,3 +1855,45 @@ def convert_filter_callback(f, sandbox_data, keep_builtin_filters_arg, filter_id
         logger.warn("result of calling arg_process_fn for filter {} is none".format(filter_id))
         return (None, None)
     return (filter["name"], result)
+
+
+def convert_modifier_callback(f, sandbox_data, modifier_id, modifier_argument):
+    """Convert filter from binary form to string.
+
+    Binary form consists of filter id and filter argument:
+      * filter id is the index inside the filters array above
+      * filter argument is an actual parameter (such as a port number),
+        a file offset or a regular expression index
+
+    The string form consists of the name of the filter (as extracted
+    from the filters array above) and a string representation of the
+    filter argument. The string form of the filter argument if obtained
+    from the binary form through the use of the callback function (as
+    extracted frm the filters array above).
+
+    Function arguments are:
+      f: the binary sandbox profile file
+      regex_list: list of regular expressions
+      filter_id: the binary form of the filter id
+      filter_arg: the binary form of the filter argument
+    """
+
+    global regex_list
+    global keep_builtin_filters
+    global global_vars
+    global base_addr
+
+    global_vars = sandbox_data.global_vars
+    regex_list = sandbox_data.regex_list
+    base_addr = sandbox_data.base_addr
+
+    if not Modifiers.exists(modifier_id):
+        return "== NEED TO ADD MODIFIER"
+    modifier_func = Modifiers.get(modifier_id)
+
+    if modifier_func["arg_process_fn"] == "get_filter_arg_string_by_offset_with_type":
+        (append, result) = globals()[modifier_func["arg_process_fn"]](f, modifier_argument)
+        result += append
+        return result
+    result = globals()[modifier_func["arg_process_fn"]](f, modifier_argument)
+    return result

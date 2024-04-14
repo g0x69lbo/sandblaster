@@ -1,13 +1,6 @@
 {"modifiers":
     [
         {
-            "action": 0,
-            "type": 0,
-            "action_mask": 0,
-            "action_flag": 0,
-            "id": 0
-        },
-        {
             "name": "send-signal",
             "action": 3,
             "type": 2,
