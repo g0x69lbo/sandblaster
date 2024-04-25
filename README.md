@@ -46,6 +46,48 @@ The actual reverser is part of the `reverse-sandbox/` folder. Files here can be 
   * Regular expression reversing is handled by `sandbox_regex.py` and `regex_parse.py`. `regex_parse.py` is the back end parser that converts the binary representation to a basic graph. `sandbox_regex.py` converts the graph representation (an automaton) to an actual regular expression (i.e. a string of characters and metacharacters). It is called by `reverse_sandbox.py` for parsing regular expressions, with the resulting regular expression list being passed to the functions exposed by `operation_node.py`; `operation_node.py` passes them on to sandbox filter handling files.
   * The new format for storing strings since iOS 10 is handled by `reverse_string.py`. The primary `SandboxString` class in `reverse_string.py` is used in `sandbox_filter.py`.
   * Logging is configured in the `logger.config` file. By default, `INFO` and higher level messages are printed to the console, while `DEBUG` and higher level messages are printed to the `reverse.log` file.
+  
+## C and Mach-O output
+
+SandBlaster supports decompilation of the sandbox into a C file (`-c`/`--c_output`) rather than Apple's Scheme format. Each operation name is now a function, with `*` being replaced with `$` in function names. While the C output itself is not very readable, it can be compiled into a native executable file (Either manually or by using the `-m`/`-macho` flag), which can be decompiled once more using Hex-Rays Decompiler or a similar decompiler. 
+
+Example output from Hex-Rays:
+```c
+long dynamic_code_generation()
+{
+  if ( !entitlement_is_bool_true("dynamic-codesigning") )
+    return deny("message 'MAP_JIT requires the dynamic-codesigning entitlement'");
+  if ( !process_attribute("is-sandboxed") || process_attribute("is-protoboxed") )
+    return deny("message 'MAP_JIT requires sandboxing'");
+  return allow("");
+}
+
+...
+
+long file_write_data()
+{
+  if ( file_attribute("sip-protected") )
+    return deny("sip-override");
+  if ( storage_class_extension("0") )
+    return allow("");
+  if ( file_attribute("datavault") )
+    return deny("sip-override");
+  if ( storage_class("MobileBackup") )
+  {
+    if ( !process_attribute("is-initproc")
+      && !process_attribute("is-installer")
+      && !signing_identifier("com.apple.filecoordinationd")
+      && !entitlement_is_bool_true("com.apple.private.security.storage.MobileBackup") )
+    {
+      return deny("sip-override");
+    }
+    goto node_835;
+  }
+  if ( storage_class("MobileStorageMounter") )
+  {
+     ...
+
+```
 
 ## Supported iOS Versions
 

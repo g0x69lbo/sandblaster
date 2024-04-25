@@ -18,6 +18,7 @@ import os
 import operation_node
 import sandbox_filter
 import sandbox_regex
+import subprocess
 from filters import Filters
 
 import tqdm
@@ -174,7 +175,9 @@ def create_operation_nodes(infile, sandbox_data, keep_builtin_filters):
 
     return sandbox_data.operation_nodes
 
-def process_profile(infile, outfname, sb_ops, ops_to_reverse, op_table, operation_nodes, c_output):
+def process_profile(infile, outfname, sb_ops, ops_to_reverse, op_table, operation_nodes, c_output, macho):
+    if macho:
+        c_output = True
     if c_output:
         outfile = open(outfname.strip() + ".c", "wt")
     else:
@@ -266,6 +269,10 @@ def process_profile(infile, outfname, sb_ops, ops_to_reverse, op_table, operatio
     outfile.close()
     outfile_xml.write("</operations>\n")
     outfile_xml.close()
+    
+    if macho:
+        # -O > 0 generates a lot of variable assignments that hinder decompilation readability
+        subprocess.run(["clang", outfname.strip() + ".c", "-g", "-O0", "-undefined", "dynamic_lookup", "-o", outfname.strip()])
 
 def display_sandbox_profiles(infile, profiles_offset, num_profiles, base_addr):
     logger.info("Printing sandbox profiles from bundle")
@@ -361,6 +368,7 @@ def main():
     parser.add_argument("-psb", "--print_sandbox_profiles", action="store_true", help="print sandbox profiles of a given bundle (only for iOS versions 9+)")
     parser.add_argument("-kbf", "--keep_builtin_filters", help="keep builtin filters in output", action="store_true")
     parser.add_argument("-c", "--c_output", help="output a C file rather than Scheme", action="store_true")
+    parser.add_argument("-m", "--macho", help="generate a reversible Mach-O file (implies --c_output)", action="store_true")
     
 
     args = parser.parse_args()
@@ -428,7 +436,7 @@ def main():
             name = name.replace('/', '_')
             out_fname = os.path.join(out_dir, name + ".sb")
 
-            process_profile(infile, out_fname, sandbox_data.sb_ops, sandbox_data.ops_to_reverse, op_table, operation_nodes, args.c_output)
+            process_profile(infile, out_fname, sandbox_data.sb_ops, sandbox_data.ops_to_reverse, op_table, operation_nodes, args.c_output, args.macho)
 
     # global profile
     else:
@@ -439,7 +447,7 @@ def main():
         logger.info("number of operation nodes: %d" % sandbox_data.op_nodes_count)
 
         out_fname = os.path.join(out_dir, os.path.splitext(os.path.basename(args.filename))[0])
-        process_profile(infile, out_fname, sandbox_data.sb_ops, sandbox_data.ops_to_reverse, op_table, operation_nodes, args.c_output)
+        process_profile(infile, out_fname, sandbox_data.sb_ops, sandbox_data.ops_to_reverse, op_table, operation_nodes, args.c_output, args.macho)
 
     infile.close()
 
