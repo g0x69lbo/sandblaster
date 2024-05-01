@@ -181,27 +181,8 @@ def process_profile(infile, outfname, sb_ops, ops_to_reverse, op_table, operatio
     if c_output:
         outfile = open(outfname.strip() + ".c", "wt")
     else:
-        outfile = open(outfname.strip(), "wt")
-    outfile_xml = open(outfname.strip() + ".xml", "wt")
-
-    outfile_xml.write('<?xml version="1.0" encoding="us-ascii" standalone="yes"?>\n')
-    outfile_xml.write('<!DOCTYPE operations [\n')
-    outfile_xml.write('<!ELEMENT operations (operation*)>\n')
-    outfile_xml.write('<!ELEMENT operation (filters?)>\n')
-    outfile_xml.write('<!ELEMENT filters (filter | require)*>\n')
-    outfile_xml.write('<!ELEMENT require (filter | require)*>\n')
-    outfile_xml.write('<!ELEMENT filter (#PCDATA)>\n')
-    outfile_xml.write('<!ATTLIST operation\n')
-    outfile_xml.write('\tname CDATA #REQUIRED\n')
-    outfile_xml.write('\taction (deny|allow) #REQUIRED>\n')
-    outfile_xml.write('<!ATTLIST require\n')
-    outfile_xml.write('\ttype (require-all|require-any|require-not|require-entitlement) #REQUIRED\n')
-    outfile_xml.write('\tvalue CDATA #IMPLIED>\n')
-    outfile_xml.write('<!ATTLIST filter\n')
-    outfile_xml.write('\tname CDATA #REQUIRED\n')
-    outfile_xml.write('\targument CDATA #IMPLIED>\n')
-    outfile_xml.write(']>\n')
-    outfile_xml.write("<operations>\n")
+        out_fname = os.path.join(outfname.strip() + ".sb")
+        outfile = open(out_fname, "wt")
 
     # Extract node for 'default' operation (index 0).
     default_node = operation_node.find_operation_node_by_offset(operation_nodes, op_table[0])
@@ -227,8 +208,6 @@ def process_profile(infile, outfname, sb_ops, ops_to_reverse, op_table, operatio
         outfile.write("(version 1)\n")
         outfile.write("(%s default)\n" % (default_node.terminal))
     
-    outfile_xml.write("\t<operation name=\"default\" action=\"%s\" />\n" % (default_node.terminal))
-
     # For each operation expand operation node.
     for idx in range(1, len(op_table)):
         offset = op_table[idx]
@@ -254,25 +233,20 @@ def process_profile(infile, outfname, sb_ops, ops_to_reverse, op_table, operatio
             rg = operation_node.reduce_operation_node_graph(g)
             rg.str_simple_with_metanodes()
             rg.print_vertices_with_operation_metanodes(operation, default_node.terminal.is_allow(), outfile)
-            #rg.dump_xml(operation, outfile_xml)
         else:
             if node.terminal:
                 if node.terminal.type != default_node.terminal.type:
                     outfile.write("(%s %s)\n" % (node.terminal, operation))
-                    outfile_xml.write("\t<operation name=\"%s\" action=\"%s\" />\n" % (operation, node.terminal))
                 else:
                     modifiers_type = [key for key, val in node.terminal.db_modifiers.items() if len(val)]
                     if modifiers_type:
                         outfile.write("(%s %s)\n" % (node.terminal, operation))
-                        outfile_xml.write("\t<operation name=\"%s\" action=\"%s\" />\n" % (operation, node.terminal))
 
     outfile.close()
-    outfile_xml.write("</operations>\n")
-    outfile_xml.close()
     
     if macho:
         # -O > 0 generates a lot of variable assignments that hinder decompilation readability
-        subprocess.run(["clang", outfname.strip() + ".c", "-g", "-O0", "-undefined", "dynamic_lookup", "-o", outfname.strip()])
+        subprocess.run(["clang", outfname.strip() + ".c", "-g", "-O0", "-undefined", "dynamic_lookup", "-Wno-everything", "-o", outfname.strip()])
 
 def display_sandbox_profiles(infile, profiles_offset, num_profiles, base_addr):
     logger.info("Printing sandbox profiles from bundle")
@@ -434,8 +408,7 @@ def main():
             op_table = struct.unpack("<%dH" % sandbox_data.sb_ops_count, infile.read(2 * sandbox_data.sb_ops_count))
 
             name = name.replace('/', '_')
-            out_fname = os.path.join(out_dir, name + ".sb")
-
+            out_fname = os.path.join(out_dir, name)
             process_profile(infile, out_fname, sandbox_data.sb_ops, sandbox_data.ops_to_reverse, op_table, operation_nodes, args.c_output, args.macho)
 
     # global profile
