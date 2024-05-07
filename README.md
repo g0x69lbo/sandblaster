@@ -30,6 +30,8 @@ In order to use SandBlaster you need access to the binary sandbox profiles and t
 cd ../reverse-sandbox/
 mkdir iPad2,1_8.4.1_12H321.reversed_profiles
 python3 reverse_sandbox.py -r 17 -o sandbox_operations sandbox_binary_profile -d output_directory/ 
+# Generate mach-o output
+python3 reverse_sandbox.py -r 17 -c -m -o sandbox_operations sandbox_binary_profile -d output_directory/ 
 ```
 
 The `-psb` option for `reverse_sandbox.py` prints out the sandbox profiles part of a sandbox bundle without doing the actual reversing.
@@ -49,7 +51,7 @@ The actual reverser is part of the `reverse-sandbox/` folder. Files here can be 
   
 ## C and Mach-O output
 
-SandBlaster supports decompilation of the sandbox into a C file (`-c`/`--c_output`) rather than Apple's Scheme format. Each operation name is now a function, with `*` being replaced with `$` in function names. While the C output itself is not very readable, it can be compiled into a native executable file (Either manually or by using the `-m`/`-macho` flag), which can be decompiled once more using Hex-Rays Decompiler or a similar decompiler. 
+SandBlaster supports decompilation of the sandbox into a C file (`-c`/`--c_output`) rather than Apple's Scheme format. Each operation name is now a function, with `*` being replaced with `$` in function names. While the C output itself is not very readable, it can be compiled into a native executable file (Either manually or by using the `-m`/`--macho` flag), which can be decompiled once more using Hex-Rays Decompiler or a similar decompiler. 
 
 Example output from Hex-Rays:
 ```c
