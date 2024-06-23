@@ -35,7 +35,6 @@ NUM_PROFILES_OFFSET = 10
 logging.config.fileConfig("logger.config")
 logger = logging.getLogger(__name__)
 
-PROFILE_OPS_OFFSET = 4  # TODO: convert this to an abstract property.. name + flags + policy index
 OPERATION_NODE_SIZE = 8
 INDEX_SIZE = 2
 
@@ -52,19 +51,21 @@ class SandboxHeader:
     sb_ops_count: int
     vars_count: int
     states_count: int
+
+
+@dataclass
+class SandboxHeader16_5(SandboxHeader):
     num_profiles: int
     regex_count: int
     entitlements_count: int
 
 
 @dataclass
-class SandboxHeader16_5(SandboxHeader):
-    pass
-
-
-@dataclass
 class SandboxHeader18_0(SandboxHeader):
-    pass
+    profile_flags: int
+    num_profiles: int
+    regex_count: int
+    entitlements_count: int
 
 
 class SandboxData(ABC):
@@ -131,13 +132,39 @@ class SandboxData(ABC):
         """
         pass
 
+    @property
     @abstractmethod
+    def PROFILE_OPS_OFFSET(self) -> int:
+        """
+        The sandbox profile op_table offset may differ between iOS versions so this is an abstract property
+        """
+        pass
+
     def _parse_offsets(self):
         """
+        TODO: Actually now this is not an abstract method.. should it be?
         The structure of the packed profile bundle may also differ between iOS versions therefore this function is
         abstract and the implementation should be provided by subclasses
         """
-        pass
+        self.sandbox_header: SandboxHeader16_5
+        self.regex_table_offset = self._header_size
+        self.vars_offset = self.regex_table_offset + (self.sandbox_header.regex_count * INDEX_SIZE)
+        self.states_offset = self.vars_offset + (self.sandbox_header.vars_count * INDEX_SIZE)
+        self.entitlements_offset = self.states_offset + (self.sandbox_header.states_count * INDEX_SIZE)
+
+        self.profiles_offset = self.entitlements_offset + (self.sandbox_header.entitlements_count * INDEX_SIZE)
+        self.profiles_end_offset = self.profiles_offset + (self.sandbox_header.num_profiles * self.PROFILE_SIZE)
+        self.operation_nodes_size = self.sandbox_header.op_nodes_count * OPERATION_NODE_SIZE
+        self.operation_nodes_offset = self.profiles_end_offset
+
+        if not self.is_profile_bundle():
+            self.operation_nodes_offset += self.sandbox_header.sb_ops_count * INDEX_SIZE
+
+        align_delta = self.operation_nodes_offset & 7
+        if align_delta != 0:
+            self.operation_nodes_offset += 8 - align_delta
+
+        self.base_addr = self.operation_nodes_offset + self.operation_nodes_size
 
     def _parse_header(self) -> SandboxHeader:
         """
@@ -283,7 +310,7 @@ class SandboxData(ABC):
             logger.info(f"Decompiling profile: {profile_name}")
 
             # operands to read for each profile
-            op_table = self.read_op_table(profile_offset + PROFILE_OPS_OFFSET)
+            op_table = self.read_op_table(profile_offset + self.PROFILE_OPS_OFFSET)
             out_fname = os.path.join(self._output_directory, profile_name.replace('/', '_'))
             process_profile(out_fname, self.sb_ops, self.ops_to_reverse, op_table, self.operation_nodes, self._c_output, self._macho)
 
@@ -303,7 +330,7 @@ class SandboxData(ABC):
     def __repr__(self) -> str:
         return f"""
             header_size: {self._header_size:#x}
-            header: {self.sandbox_header.profile_type:#x}
+            profile_type: {self.sandbox_header.profile_type:#x}
             op_nodes_count: {self.sandbox_header.op_nodes_count:#x}
             sb_ops_count: {self.sandbox_header.sb_ops_count:#x}
             vars_count: {self.sandbox_header.vars_count:#x}
@@ -344,29 +371,36 @@ class SandboxData16_5(SandboxData):
         """
         return (self.sandbox_header.sb_ops_count * INDEX_SIZE) + INDEX_SIZE + INDEX_SIZE  # + name + policy index
 
-    def _parse_offsets(self) -> None:
-        self.regex_table_offset = self._header_size
-        self.vars_offset = self.regex_table_offset + (self.sandbox_header.regex_count * INDEX_SIZE)
-        self.states_offset = self.vars_offset + (self.sandbox_header.vars_count * INDEX_SIZE)
-        self.entitlements_offset = self.states_offset + (self.sandbox_header.states_count * INDEX_SIZE)
-
-        self.profiles_offset = self.entitlements_offset + (self.sandbox_header.entitlements_count * INDEX_SIZE)
-        self.profiles_end_offset = self.profiles_offset + (self.sandbox_header.num_profiles * (self.sandbox_header.sb_ops_count * INDEX_SIZE + PROFILE_OPS_OFFSET))
-        self.operation_nodes_size = self.sandbox_header.op_nodes_count * OPERATION_NODE_SIZE
-        self.operation_nodes_offset = self.profiles_end_offset
-
-        if not self.is_profile_bundle():
-            self.operation_nodes_offset += self.sandbox_header.sb_ops_count * INDEX_SIZE
-
-        align_delta = self.operation_nodes_offset & 7
-        if align_delta != 0:
-            self.operation_nodes_offset += 8 - align_delta
-
-        self.base_addr = self.operation_nodes_offset + self.operation_nodes_size
+    @property
+    def PROFILE_OPS_OFFSET(self):
+        return 4
 
 
-class SandboxData_18_0(SandboxData):
-    pass
+class SandboxData18_0(SandboxData):
+
+    @property
+    def HEADER_STRUCT(self) -> struct.Struct:
+        return struct.Struct('<HHBBBxBxHHH')
+
+    @property
+    def HEADER_CLS(self) -> Type[SandboxHeader]:
+        return SandboxHeader18_0
+
+    @property
+    def PROFILE_SIZE(self) -> int:
+        # TODO: actually understand what are the new fields to each profile..
+        return 0x188
+
+    @property
+    def PROFILE_OPS_OFFSET(self) -> int:
+        return 8
+
+
+RELEASES = {
+    '16.5': SandboxData16_5,
+    '17': SandboxData16_5,
+    '18': SandboxData18_0
+}
 
 
 def node_to_c(node):
@@ -470,9 +504,7 @@ def process_profile(outfname, sb_ops, ops_to_reverse, op_table, operation_nodes,
 
 
 def main(args: argparse.Namespace, sb_ops: list[str]) -> int:
-
-    # TODO: choose the class according to the --release argument
-    sandbox_data = SandboxData16_5(args, sb_ops)
+    sandbox_data = RELEASES[args.release](args, sb_ops)
 
     # Print the sandbox header to the console
     print(sandbox_data)
@@ -499,11 +531,10 @@ def main(args: argparse.Namespace, sb_ops: list[str]) -> int:
     sandbox_data.decompile()
 
 
-
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(description='Reverse Apple binary sandbox file to SBPL (Sandbox Profile Language) format.')
     parser.add_argument("input_file", type=argparse.FileType('rb'), help="path to the binary sandbox profile")
-    parser.add_argument("-r", "--release", help="iOS release version for sandbox profile", required=True)
+    parser.add_argument("-r", "--release", help="iOS release version for sandbox profile", choices=RELEASES.keys(), required=True)
     parser.add_argument("-o", "--operations_file", type=argparse.FileType('r'), help="file with list of operations", required=True)
     parser.add_argument("-p", "--profile", dest='profiles_to_reverse', nargs='+', help="profile to reverse (for bundles) (default is to reverse all operations)")
     parser.add_argument("-n", "--operation", dest='ops_to_reverse', nargs='+', help="particular operation(s) to reverse (default is to reverse all operations)")
