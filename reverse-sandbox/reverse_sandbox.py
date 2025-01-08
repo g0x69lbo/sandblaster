@@ -46,15 +46,16 @@ class ProfileType(IntEnum):
 
 @dataclass
 class SandboxHeader:
+    pass
+
+
+@dataclass
+class SandboxHeader16_5(SandboxHeader):
     profile_type: ProfileType
     op_nodes_count: int
     sb_ops_count: int
     vars_count: int
     states_count: int
-
-
-@dataclass
-class SandboxHeader16_5(SandboxHeader):
     num_profiles: int
     regex_count: int
     entitlements_count: int
@@ -62,6 +63,11 @@ class SandboxHeader16_5(SandboxHeader):
 
 @dataclass
 class SandboxHeader18_0(SandboxHeader):
+    profile_type: ProfileType
+    op_nodes_count: int
+    sb_ops_count: int
+    vars_count: int
+    states_count: int
     profile_flags: int
     num_profiles: int
     regex_count: int
